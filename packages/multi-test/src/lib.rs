@@ -12,20 +12,13 @@ mod contracts;
 pub mod custom_handler;
 pub mod error;
 mod executor;
-mod module;
-mod staking;
 mod test_helpers;
 mod transactions;
-mod untyped_msg;
 mod wasm;
 
-pub use crate::app::{
-    custom_app, next_block, App, AppBuilder, BasicApp, BasicAppBuilder, CosmosRouter, Router,
-    SudoMsg,
-};
-pub use crate::bank::{Bank, BankKeeper, BankSudo};
+pub use crate::app::{next_block, App, AppBuilder, Router};
+pub use crate::bank::{Bank, BankKeeper};
 pub use crate::contracts::{Contract, ContractWrapper};
+pub use crate::custom_handler::CustomHandler;
 pub use crate::executor::{AppResponse, Executor};
-pub use crate::module::Module;
-pub use crate::staking::{FailingDistribution, FailingStaking, Staking, StakingSudo};
-pub use crate::wasm::{Wasm, WasmKeeper, WasmSudo};
+pub use crate::wasm::{parse_contract_addr, Wasm, WasmKeeper};

@@ -24,3 +24,4 @@ const key = new MnemonicKey({
 
 export const wallet = terra.wallet(key);
 export const feeDenom = config.fee_denom || "uusd";
+export const multisigAddress = ''

@@ -10,7 +10,7 @@ use std::ops::{Bound, RangeBounds};
 
 use cosmwasm_std::Storage;
 #[cfg(feature = "iterator")]
-use cosmwasm_std::{Order, Record};
+use cosmwasm_std::{Order, Pair};
 
 use anyhow::Result as AnyResult;
 
@@ -87,7 +87,7 @@ impl<'a> Storage for StorageTransaction<'a> {
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         order: Order,
-    ) -> Box<dyn Iterator<Item = Record> + 'b> {
+    ) -> Box<dyn Iterator<Item = Pair> + 'b> {
         let bounds = range_bounds(start, end);
 
         // BTreeMap.range panics if range is start > end.
@@ -152,8 +152,8 @@ impl Op {
     /// applies this `Op` to the provided storage
     pub fn apply(&self, storage: &mut dyn Storage) {
         match self {
-            Op::Set { key, value } => storage.set(key, value),
-            Op::Delete { key } => storage.remove(key),
+            Op::Set { key, value } => storage.set(&key, &value),
+            Op::Delete { key } => storage.remove(&key),
         }
     }
 
@@ -180,7 +180,7 @@ enum Delta {
 struct MergeOverlay<'a, L, R>
 where
     L: Iterator<Item = BTreeMapPairRef<'a, Delta>>,
-    R: Iterator<Item = Record>,
+    R: Iterator<Item = Pair>,
 {
     left: Peekable<L>,
     right: Peekable<R>,
@@ -191,7 +191,7 @@ where
 impl<'a, L, R> MergeOverlay<'a, L, R>
 where
     L: Iterator<Item = BTreeMapPairRef<'a, Delta>>,
-    R: Iterator<Item = Record>,
+    R: Iterator<Item = Pair>,
 {
     fn new(left: L, right: R, order: Order) -> Self {
         MergeOverlay {
@@ -201,7 +201,7 @@ where
         }
     }
 
-    fn pick_match(&mut self, lkey: Vec<u8>, rkey: Vec<u8>) -> Option<Record> {
+    fn pick_match(&mut self, lkey: Vec<u8>, rkey: Vec<u8>) -> Option<Pair> {
         // compare keys - result is such that Ordering::Less => return left side
         let order = match self.order {
             Order::Ascending => lkey.cmp(&rkey),
@@ -221,7 +221,7 @@ where
     }
 
     /// take_left must only be called when we know self.left.next() will return Some
-    fn take_left(&mut self) -> Option<Record> {
+    fn take_left(&mut self) -> Option<Pair> {
         let (lkey, lval) = self.left.next().unwrap();
         match lval {
             Delta::Set { value } => Some((lkey.clone(), value.clone())),
@@ -234,9 +234,9 @@ where
 impl<'a, L, R> Iterator for MergeOverlay<'a, L, R>
 where
     L: Iterator<Item = BTreeMapPairRef<'a, Delta>>,
-    R: Iterator<Item = Record>,
+    R: Iterator<Item = Pair>,
 {
-    type Item = Record;
+    type Item = Pair;
 
     fn next(&mut self) -> Option<Self::Item> {
         let (left, right) = (self.left.peek(), self.right.peek());
@@ -360,7 +360,7 @@ mod test {
         // unbounded
         {
             let iter = store.range(None, None, Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![
@@ -374,7 +374,7 @@ mod test {
         // unbounded (descending)
         {
             let iter = store.range(None, None, Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![
@@ -388,14 +388,14 @@ mod test {
         // bounded
         {
             let iter = store.range(Some(b"f"), Some(b"n"), Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![(b"foo".to_vec(), b"bar".to_vec())]);
         }
 
         // bounded (descending)
         {
             let iter = store.range(Some(b"air"), Some(b"loop"), Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![
@@ -408,35 +408,35 @@ mod test {
         // bounded empty [a, a)
         {
             let iter = store.range(Some(b"foo"), Some(b"foo"), Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![]);
         }
 
         // bounded empty [a, a) (descending)
         {
             let iter = store.range(Some(b"foo"), Some(b"foo"), Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![]);
         }
 
         // bounded empty [a, b) with b < a
         {
             let iter = store.range(Some(b"z"), Some(b"a"), Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![]);
         }
 
         // bounded empty [a, b) with b < a (descending)
         {
             let iter = store.range(Some(b"z"), Some(b"a"), Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![]);
         }
 
         // right unbounded
         {
             let iter = store.range(Some(b"f"), None, Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![
@@ -449,7 +449,7 @@ mod test {
         // right unbounded (descending)
         {
             let iter = store.range(Some(b"f"), None, Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![
@@ -462,14 +462,14 @@ mod test {
         // left unbounded
         {
             let iter = store.range(None, Some(b"f"), Order::Ascending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(elements, vec![(b"ant".to_vec(), b"hill".to_vec()),]);
         }
 
         // left unbounded (descending)
         {
             let iter = store.range(None, Some(b"no"), Order::Descending);
-            let elements: Vec<Record> = iter.collect();
+            let elements: Vec<Pair> = iter.collect();
             assert_eq!(
                 elements,
                 vec![

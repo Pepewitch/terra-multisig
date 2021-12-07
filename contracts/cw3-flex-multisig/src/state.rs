@@ -9,7 +9,7 @@ use cosmwasm_std::{
 use cw0::{Duration, Expiration};
 use cw3::{Status, Vote};
 use cw4::Cw4Contract;
-use cw_storage_plus::{Item, Map};
+use cw_storage_plus::{Item, Map, U64Key};
 
 use crate::msg::Threshold;
 
@@ -57,7 +57,7 @@ impl Votes {
     }
 
     /// create it with a yes vote for this much
-    pub fn yes(init_weight: u64) -> Self {
+    pub fn new(init_weight: u64) -> Self {
         Votes {
             yes: init_weight,
             no: 0,
@@ -153,8 +153,8 @@ pub const CONFIG: Item<Config> = Item::new("config");
 pub const PROPOSAL_COUNT: Item<u64> = Item::new("proposal_count");
 
 // multiple-item map
-pub const BALLOTS: Map<(u64, &Addr), Ballot> = Map::new("votes");
-pub const PROPOSALS: Map<u64, Proposal> = Map::new("proposals");
+pub const BALLOTS: Map<(U64Key, &Addr), Ballot> = Map::new("votes");
+pub const PROPOSALS: Map<U64Key, Proposal> = Map::new("proposals");
 
 pub fn next_id(store: &mut dyn Storage) -> StdResult<u64> {
     let id: u64 = PROPOSAL_COUNT.may_load(store)?.unwrap_or_default() + 1;
@@ -178,7 +178,7 @@ mod test {
 
     #[test]
     fn count_votes() {
-        let mut votes = Votes::yes(5);
+        let mut votes = Votes::new(5);
         votes.add_vote(Vote::No, 10);
         votes.add_vote(Vote::Veto, 20);
         votes.add_vote(Vote::Yes, 30);
@@ -233,7 +233,7 @@ mod test {
     #[test]
     fn proposal_passed_absolute_count() {
         let fixed = Threshold::AbsoluteCount { weight: 10 };
-        let mut votes = Votes::yes(7);
+        let mut votes = Votes::new(7);
         votes.add_vote(Vote::Veto, 4);
         // same expired or not, total_weight or whatever
         assert!(!check_is_passed(fixed.clone(), votes.clone(), 30, false));
@@ -249,7 +249,7 @@ mod test {
         let percent = Threshold::AbsolutePercentage {
             percentage: Decimal::percent(50),
         };
-        let mut votes = Votes::yes(7);
+        let mut votes = Votes::new(7);
         votes.add_vote(Vote::No, 4);
         votes.add_vote(Vote::Abstain, 2);
         // same expired or not, if yes >= ceiling(0.5 * (total - abstained))

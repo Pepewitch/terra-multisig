@@ -125,14 +125,14 @@ pub fn execute_propose(
         required_weight: cfg.required_weight,
     };
     let id = next_id(deps.storage)?;
-    PROPOSALS.save(deps.storage, id, &prop)?;
+    PROPOSALS.save(deps.storage, id.into(), &prop)?;
 
     // add the first yes vote from voter
     let ballot = Ballot {
         weight: vote_power,
         vote: Vote::Yes,
     };
-    BALLOTS.save(deps.storage, (id, &info.sender), &ballot)?;
+    BALLOTS.save(deps.storage, (id.into(), &info.sender), &ballot)?;
 
     Ok(Response::new()
         .add_attribute("action", "propose")
@@ -154,7 +154,7 @@ pub fn execute_vote(
         .ok_or(ContractError::Unauthorized {})?;
 
     // ensure proposal exists and can be voted on
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     if prop.status != Status::Open {
         return Err(ContractError::NotOpen {});
     }
@@ -163,13 +163,17 @@ pub fn execute_vote(
     }
 
     // cast vote if no vote previously cast
-    BALLOTS.update(deps.storage, (proposal_id, &info.sender), |bal| match bal {
-        Some(_) => Err(ContractError::AlreadyVoted {}),
-        None => Ok(Ballot {
-            weight: vote_power,
-            vote,
-        }),
-    })?;
+    BALLOTS.update(
+        deps.storage,
+        (proposal_id.into(), &info.sender),
+        |bal| match bal {
+            Some(_) => Err(ContractError::AlreadyVoted {}),
+            None => Ok(Ballot {
+                weight: vote_power,
+                vote,
+            }),
+        },
+    )?;
 
     // if yes vote, update tally
     if vote == Vote::Yes {
@@ -178,7 +182,7 @@ pub fn execute_vote(
         if prop.yes_weight >= prop.required_weight {
             prop.status = Status::Passed;
         }
-        PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+        PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
     }
 
     Ok(Response::new()
@@ -196,7 +200,7 @@ pub fn execute_execute(
 ) -> Result<Response, ContractError> {
     // anyone can trigger this if the vote passed
 
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     // we allow execution even after the proposal "expiration" as long as all vote come in before
     // that point. If it was approved on time, it can be executed any time.
     if prop.status != Status::Passed {
@@ -205,7 +209,7 @@ pub fn execute_execute(
 
     // set it to executed
     prop.status = Status::Executed;
-    PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+    PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
 
     // dispatch all proposed messages
     Ok(Response::new()
@@ -223,7 +227,7 @@ pub fn execute_close(
 ) -> Result<Response<Empty>, ContractError> {
     // anyone can trigger this if the vote passed
 
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     if [Status::Executed, Status::Rejected, Status::Passed]
         .iter()
         .any(|x| *x == prop.status)
@@ -236,7 +240,7 @@ pub fn execute_close(
 
     // set it to failed
     prop.status = Status::Rejected;
-    PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+    PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
 
     Ok(Response::new()
         .add_attribute("action", "close")
@@ -278,7 +282,7 @@ fn query_threshold(deps: Deps) -> StdResult<ThresholdResponse> {
 }
 
 fn query_proposal(deps: Deps, env: Env, id: u64) -> StdResult<ProposalResponse> {
-    let prop = PROPOSALS.load(deps.storage, id)?;
+    let prop = PROPOSALS.load(deps.storage, id.into())?;
     let status = prop.current_status(&env.block);
 
     let cfg = CONFIG.load(deps.storage)?;
@@ -367,7 +371,7 @@ fn map_proposal(
 
 fn query_vote(deps: Deps, proposal_id: u64, voter: String) -> StdResult<VoteResponse> {
     let voter = deps.api.addr_validate(&voter)?;
-    let ballot = BALLOTS.may_load(deps.storage, (proposal_id, &voter))?;
+    let ballot = BALLOTS.may_load(deps.storage, (proposal_id.into(), &voter))?;
     let vote = ballot.map(|b| VoteInfo {
         voter: voter.into(),
         vote: b.vote,
@@ -386,7 +390,7 @@ fn list_votes(
     let start = start_after.map(Bound::exclusive);
 
     let votes: StdResult<Vec<_>> = BALLOTS
-        .prefix(proposal_id)
+        .prefix(proposal_id.into())
         .range(deps.storage, start, None, Order::Ascending)
         .take(limit)
         .map(|item| {
@@ -515,7 +519,7 @@ mod tests {
 
     #[test]
     fn test_instantiate_works() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
         let info = mock_info(OWNER, &[]);
 
         let max_voting_period = Duration::Time(1234567);
@@ -569,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_propose_works() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
 
         let required_weight = 4;
         let voting_period = Duration::Time(2000000);
@@ -636,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_vote_works() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
 
         let required_weight = 3;
         let voting_period = Duration::Time(2000000);
@@ -749,7 +753,7 @@ mod tests {
 
     #[test]
     fn test_execute_works() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
 
         let required_weight = 3;
         let voting_period = Duration::Time(2000000);
@@ -824,7 +828,7 @@ mod tests {
 
     #[test]
     fn test_close_works() {
-        let mut deps = mock_dependencies();
+        let mut deps = mock_dependencies(&[]);
 
         let required_weight = 3;
         let voting_period = Duration::Height(2000000);

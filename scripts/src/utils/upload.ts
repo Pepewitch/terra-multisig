@@ -8,18 +8,19 @@ import { retry } from "./retry";
 export const upload = async (path: string) => {
   const fee = isMainnet
     ? new StdFee(5000000, "1000000uusd")
-    : await retry(async () => {
-        return terra.tx.estimateFee(
-          wallet.key.accAddress,
-          [
-            new MsgStoreCode(
-              wallet.key.accAddress,
-              fs.readFileSync(path, { encoding: "base64" })
-            ),
-          ],
-          { feeDenoms: [feeDenom] }
-        );
-      });
+    : new StdFee(5000000, "1000000uusd")
+    // await retry(async () => {
+    //     return terra.tx.estimateFee(
+    //       wallet.key.accAddress,
+    //       [
+    //         new MsgStoreCode(
+    //           wallet.key.accAddress,
+    //           fs.readFileSync(path, { encoding: "base64" })
+    //         ),
+    //       ],
+    //       { feeDenoms: [feeDenom] }
+    //     );
+    //   });
 
   const codeId = await retry(async () => {
     const tx = await wallet.createAndSignTx({

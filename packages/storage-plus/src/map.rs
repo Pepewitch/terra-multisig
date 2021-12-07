@@ -2,17 +2,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::marker::PhantomData;
 
-#[cfg(feature = "iterator")]
-use crate::de::KeyDeserialize;
 use crate::helpers::query_raw;
+use crate::keys::PrimaryKey;
 #[cfg(feature = "iterator")]
-use crate::iter_helpers::{deserialize_kv, deserialize_v};
-#[cfg(feature = "iterator")]
-use crate::keys::Prefixer;
-use crate::keys::{Key, PrimaryKey};
+use crate::keys::{EmptyPrefix, Prefixer};
 use crate::path::Path;
 #[cfg(feature = "iterator")]
-use crate::prefix::{namespaced_prefix_range, Bound, Prefix, PrefixBound};
+use crate::prefix::{Bound, Prefix};
 use cosmwasm_std::{from_slice, Addr, QuerierWrapper, StdError, StdResult, Storage};
 
 #[derive(Debug, Clone)]
@@ -38,30 +34,18 @@ where
     T: Serialize + DeserializeOwned,
     K: PrimaryKey<'a>,
 {
-    pub fn namespace(&self) -> &'a [u8] {
-        self.namespace
-    }
-
     pub fn key(&self, k: K) -> Path<T> {
-        Path::new(
-            self.namespace,
-            &k.key().iter().map(Key::as_ref).collect::<Vec<_>>(),
-        )
+        Path::new(self.namespace, &k.key())
     }
 
     #[cfg(feature = "iterator")]
-    pub fn prefix(&self, p: K::Prefix) -> Prefix<Vec<u8>, T> {
+    pub fn prefix(&self, p: K::Prefix) -> Prefix<T> {
         Prefix::new(self.namespace, &p.prefix())
     }
 
     #[cfg(feature = "iterator")]
-    pub fn sub_prefix(&self, p: K::SubPrefix) -> Prefix<Vec<u8>, T> {
+    pub fn sub_prefix(&self, p: K::SubPrefix) -> Prefix<T> {
         Prefix::new(self.namespace, &p.prefix())
-    }
-
-    #[cfg(feature = "iterator")]
-    pub(crate) fn no_prefix(&self) -> Prefix<Vec<u8>, T> {
-        Prefix::new(self.namespace, &[])
     }
 
     pub fn save(&self, store: &mut dyn Storage, k: K, data: &T) -> StdResult<()> {
@@ -119,62 +103,26 @@ where
     }
 }
 
-#[cfg(feature = "iterator")]
-impl<'a, K, T> Map<'a, K, T>
-where
-    T: Serialize + DeserializeOwned,
-    K: PrimaryKey<'a>,
-{
-    pub fn sub_prefix_de(&self, p: K::SubPrefix) -> Prefix<K::SuperSuffix, T> {
-        Prefix::new(self.namespace, &p.prefix())
-    }
-
-    pub fn prefix_de(&self, p: K::Prefix) -> Prefix<K::Suffix, T> {
-        Prefix::new(self.namespace, &p.prefix())
-    }
-}
-
 // short-cut for simple keys, rather than .prefix(()).range(...)
 #[cfg(feature = "iterator")]
 impl<'a, K, T> Map<'a, K, T>
 where
     T: Serialize + DeserializeOwned,
-    // TODO: this should only be when K::Prefix == ()
-    // Other cases need to call prefix() first
     K: PrimaryKey<'a>,
+    K::SubPrefix: EmptyPrefix,
 {
-    /// While `range` over a `prefix` fixes the prefix to one element and iterates over the
-    /// remaining, `prefix_range` accepts bounds for the lowest and highest elements of the `Prefix`
-    /// itself, and iterates over those (inclusively or exclusively, depending on `PrefixBound`).
-    /// There are some issues that distinguish these two, and blindly casting to `Vec<u8>` doesn't
-    /// solve them.
-    pub fn prefix_range<'c>(
-        &self,
-        store: &'c dyn Storage,
-        min: Option<PrefixBound<'a, K::Prefix>>,
-        max: Option<PrefixBound<'a, K::Prefix>>,
-        order: cosmwasm_std::Order,
-    ) -> Box<dyn Iterator<Item = StdResult<cosmwasm_std::Record<T>>> + 'c>
-    where
-        T: 'c,
-        'a: 'c,
-    {
-        let mapped =
-            namespaced_prefix_range(store, self.namespace, min, max, order).map(deserialize_v);
-        Box::new(mapped)
-    }
-
     pub fn range<'c>(
         &self,
         store: &'c dyn Storage,
         min: Option<Bound>,
         max: Option<Bound>,
         order: cosmwasm_std::Order,
-    ) -> Box<dyn Iterator<Item = StdResult<cosmwasm_std::Record<T>>> + 'c>
+    ) -> Box<dyn Iterator<Item = StdResult<cosmwasm_std::Pair<T>>> + 'c>
     where
         T: 'c,
     {
-        self.no_prefix().range(store, min, max, order)
+        self.sub_prefix(K::SubPrefix::new())
+            .range(store, min, max, order)
     }
 
     pub fn keys<'c>(
@@ -187,70 +135,8 @@ where
     where
         T: 'c,
     {
-        self.no_prefix().keys(store, min, max, order)
-    }
-}
-
-#[cfg(feature = "iterator")]
-impl<'a, K, T> Map<'a, K, T>
-where
-    T: Serialize + DeserializeOwned,
-    K: PrimaryKey<'a> + KeyDeserialize,
-{
-    /// While `range_de` over a `prefix_de` fixes the prefix to one element and iterates over the
-    /// remaining, `prefix_range_de` accepts bounds for the lowest and highest elements of the
-    /// `Prefix` itself, and iterates over those (inclusively or exclusively, depending on
-    /// `PrefixBound`).
-    /// There are some issues that distinguish these two, and blindly casting to `Vec<u8>` doesn't
-    /// solve them.
-    pub fn prefix_range_de<'c>(
-        &self,
-        store: &'c dyn Storage,
-        min: Option<PrefixBound<'a, K::Prefix>>,
-        max: Option<PrefixBound<'a, K::Prefix>>,
-        order: cosmwasm_std::Order,
-    ) -> Box<dyn Iterator<Item = StdResult<(K::Output, T)>> + 'c>
-    where
-        T: 'c,
-        'a: 'c,
-        K: 'c,
-        K::Output: 'static,
-    {
-        let mapped = namespaced_prefix_range(store, self.namespace, min, max, order)
-            .map(deserialize_kv::<K, T>);
-        Box::new(mapped)
-    }
-
-    pub fn range_de<'c>(
-        &self,
-        store: &'c dyn Storage,
-        min: Option<Bound>,
-        max: Option<Bound>,
-        order: cosmwasm_std::Order,
-    ) -> Box<dyn Iterator<Item = StdResult<(K::Output, T)>> + 'c>
-    where
-        T: 'c,
-        K::Output: 'static,
-    {
-        self.no_prefix_de().range_de(store, min, max, order)
-    }
-
-    pub fn keys_de<'c>(
-        &self,
-        store: &'c dyn Storage,
-        min: Option<Bound>,
-        max: Option<Bound>,
-        order: cosmwasm_std::Order,
-    ) -> Box<dyn Iterator<Item = StdResult<K::Output>> + 'c>
-    where
-        T: 'c,
-        K::Output: 'static,
-    {
-        self.no_prefix_de().keys_de(store, min, max, order)
-    }
-
-    fn no_prefix_de(&self) -> Prefix<K, T> {
-        Prefix::new(self.namespace, &[])
+        self.sub_prefix(K::SubPrefix::new())
+            .keys(store, min, max, order)
     }
 }
 
@@ -260,6 +146,9 @@ mod test {
     use serde::{Deserialize, Serialize};
     use std::ops::Deref;
 
+    #[cfg(feature = "iterator")]
+    use crate::iter_helpers::to_length_prefixed;
+    use crate::U8Key;
     use cosmwasm_std::testing::MockStorage;
     #[cfg(feature = "iterator")]
     use cosmwasm_std::{Order, StdResult};
@@ -271,12 +160,10 @@ mod test {
     }
 
     const PEOPLE: Map<&[u8], Data> = Map::new("people");
-    #[cfg(feature = "iterator")]
-    const PEOPLE_ID: Map<u32, Data> = Map::new("people_id");
 
     const ALLOWANCE: Map<(&[u8], &[u8]), u64> = Map::new("allow");
 
-    const TRIPLE: Map<(&[u8], u8, &str), u64> = Map::new("triple");
+    const TRIPLE: Map<(&[u8], U8Key, &str), u64> = Map::new("triple");
 
     #[test]
     fn create_path() {
@@ -298,7 +185,7 @@ mod test {
         assert_eq!(b"john".to_vec().as_slice(), &key[9..13]);
         assert_eq!(b"maria".to_vec().as_slice(), &key[13..]);
 
-        let path = TRIPLE.key((b"john", 8u8, "pedro"));
+        let path = TRIPLE.key((b"john", 8u8.into(), "pedro"));
         let key = path.deref();
         // this should be prefixed(allow) || prefixed(john) || maria
         assert_eq!(
@@ -387,19 +274,21 @@ mod test {
         let mut store = MockStorage::new();
 
         // save and load on a triple composite key
-        let triple = TRIPLE.key((b"owner", 10u8, "recipient"));
+        let triple = TRIPLE.key((b"owner", 10u8.into(), "recipient"));
         assert_eq!(None, triple.may_load(&store).unwrap());
         triple.save(&mut store, &1234).unwrap();
         assert_eq!(1234, triple.load(&store).unwrap());
 
         // not under other key
         let different = TRIPLE
-            .may_load(&store, (b"owners", 10u8, "ecipient"))
+            .may_load(&store, (b"owners", 10u8.into(), "ecipient"))
             .unwrap();
         assert_eq!(None, different);
 
         // matches under a proper copy
-        let same = TRIPLE.load(&store, (b"owner", 10u8, "recipient")).unwrap();
+        let same = TRIPLE
+            .load(&store, (b"owner", 10u8.into(), "recipient"))
+            .unwrap();
         assert_eq!(1234, same);
     }
 
@@ -465,121 +354,6 @@ mod test {
 
     #[test]
     #[cfg(feature = "iterator")]
-    fn range_de_simple_string_key() {
-        let mut store = MockStorage::new();
-
-        // save and load on two keys
-        let data = Data {
-            name: "John".to_string(),
-            age: 32,
-        };
-        PEOPLE.save(&mut store, b"john", &data).unwrap();
-
-        let data2 = Data {
-            name: "Jim".to_string(),
-            age: 44,
-        };
-        PEOPLE.save(&mut store, b"jim", &data2).unwrap();
-
-        // let's try to iterate!
-        let all: StdResult<Vec<_>> = PEOPLE
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(
-            all,
-            vec![
-                (b"jim".to_vec(), data2.clone()),
-                (b"john".to_vec(), data.clone())
-            ]
-        );
-
-        // let's try to iterate over a range
-        let all: StdResult<Vec<_>> = PEOPLE
-            .range_de(
-                &store,
-                Some(Bound::Inclusive(b"j".to_vec())),
-                None,
-                Order::Ascending,
-            )
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(
-            all,
-            vec![(b"jim".to_vec(), data2), (b"john".to_vec(), data.clone())]
-        );
-
-        // let's try to iterate over a more restrictive range
-        let all: StdResult<Vec<_>> = PEOPLE
-            .range_de(
-                &store,
-                Some(Bound::Inclusive(b"jo".to_vec())),
-                None,
-                Order::Ascending,
-            )
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(1, all.len());
-        assert_eq!(all, vec![(b"john".to_vec(), data)]);
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
-    fn range_de_simple_integer_key() {
-        let mut store = MockStorage::new();
-
-        // save and load on two keys
-        let data = Data {
-            name: "John".to_string(),
-            age: 32,
-        };
-        PEOPLE_ID.save(&mut store, 1234, &data).unwrap();
-
-        let data2 = Data {
-            name: "Jim".to_string(),
-            age: 44,
-        };
-        PEOPLE_ID.save(&mut store, 56, &data2).unwrap();
-
-        // let's try to iterate!
-        let all: StdResult<Vec<_>> = PEOPLE_ID
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(all, vec![(56, data2.clone()), (1234, data.clone())]);
-
-        // let's try to iterate over a range
-        let all: StdResult<Vec<_>> = PEOPLE_ID
-            .range_de(
-                &store,
-                Some(Bound::inclusive_int(56u32)),
-                None,
-                Order::Ascending,
-            )
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(all, vec![(56, data2), (1234, data.clone())]);
-
-        // let's try to iterate over a more restrictive range
-        let all: StdResult<Vec<_>> = PEOPLE_ID
-            .range_de(
-                &store,
-                Some(Bound::inclusive_int(57u32)),
-                None,
-                Order::Ascending,
-            )
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(1, all.len());
-        assert_eq!(all, vec![(1234, data)]);
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
     fn range_composite_key() {
         let mut store = MockStorage::new();
 
@@ -596,21 +370,6 @@ mod test {
 
         // let's try to iterate!
         let all: StdResult<Vec<_>> = ALLOWANCE
-            .range(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(3, all.len());
-        assert_eq!(
-            all,
-            vec![
-                ((b"owner".to_vec(), b"spender".to_vec()).joined_key(), 1000),
-                ((b"owner".to_vec(), b"spender2".to_vec()).joined_key(), 3000),
-                ((b"owner2".to_vec(), b"spender".to_vec()).joined_key(), 5000),
-            ]
-        );
-
-        // let's try to iterate over a prefix
-        let all: StdResult<Vec<_>> = ALLOWANCE
             .prefix(b"owner")
             .range(&store, None, None, Order::Ascending)
             .collect();
@@ -624,96 +383,26 @@ mod test {
 
     #[test]
     #[cfg(feature = "iterator")]
-    fn range_de_composite_key() {
-        let mut store = MockStorage::new();
-
-        // save and load on three keys, one under different owner
-        ALLOWANCE
-            .save(&mut store, (b"owner", b"spender"), &1000)
-            .unwrap();
-        ALLOWANCE
-            .save(&mut store, (b"owner", b"spender2"), &3000)
-            .unwrap();
-        ALLOWANCE
-            .save(&mut store, (b"owner2", b"spender"), &5000)
-            .unwrap();
-
-        // let's try to iterate!
-        let all: StdResult<Vec<_>> = ALLOWANCE
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(3, all.len());
-        assert_eq!(
-            all,
-            vec![
-                ((b"owner".to_vec(), b"spender".to_vec()), 1000),
-                ((b"owner".to_vec(), b"spender2".to_vec()), 3000),
-                ((b"owner2".to_vec(), b"spender".to_vec()), 5000)
-            ]
-        );
-
-        // let's try to iterate over a prefix_de
-        let all: StdResult<Vec<_>> = ALLOWANCE
-            .prefix_de(b"owner")
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(
-            all,
-            vec![(b"spender".to_vec(), 1000), (b"spender2".to_vec(), 3000),]
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
     fn range_triple_key() {
         let mut store = MockStorage::new();
 
         // save and load on three keys, one under different owner
         TRIPLE
-            .save(&mut store, (b"owner", 9, "recipient"), &1000)
+            .save(&mut store, (b"owner", 9u8.into(), "recipient"), &1000)
             .unwrap();
         TRIPLE
-            .save(&mut store, (b"owner", 9, "recipient2"), &3000)
+            .save(&mut store, (b"owner", 9u8.into(), "recipient2"), &3000)
             .unwrap();
         TRIPLE
-            .save(&mut store, (b"owner", 10, "recipient3"), &3000)
+            .save(&mut store, (b"owner", 10u8.into(), "recipient3"), &3000)
             .unwrap();
         TRIPLE
-            .save(&mut store, (b"owner2", 9, "recipient"), &5000)
+            .save(&mut store, (b"owner2", 9u8.into(), "recipient"), &5000)
             .unwrap();
 
         // let's try to iterate!
-        let all: StdResult<Vec<_>> = TRIPLE.range(&store, None, None, Order::Ascending).collect();
-        let all = all.unwrap();
-        assert_eq!(4, all.len());
-        assert_eq!(
-            all,
-            vec![
-                (
-                    (b"owner".to_vec(), 9u8, b"recipient".to_vec()).joined_key(),
-                    1000
-                ),
-                (
-                    (b"owner".to_vec(), 9u8, b"recipient2".to_vec()).joined_key(),
-                    3000
-                ),
-                (
-                    (b"owner".to_vec(), 10u8, b"recipient3".to_vec()).joined_key(),
-                    3000
-                ),
-                (
-                    (b"owner2".to_vec(), 9u8, b"recipient".to_vec()).joined_key(),
-                    5000
-                )
-            ]
-        );
-
-        // let's iterate over a prefix
         let all: StdResult<Vec<_>> = TRIPLE
-            .prefix((b"owner", 9))
+            .prefix((b"owner", 9u8.into()))
             .range(&store, None, None, Order::Ascending)
             .collect();
         let all = all.unwrap();
@@ -733,80 +422,22 @@ mod test {
             .collect();
         let all = all.unwrap();
         assert_eq!(3, all.len());
-        // Use range_de() if you want key deserialization
+        // FIXME: range() works, but remaining keys are still encoded
         assert_eq!(
             all,
             vec![
-                ((9u8, b"recipient".to_vec()).joined_key(), 1000),
-                ((9u8, b"recipient2".to_vec()).joined_key(), 3000),
-                ((10u8, b"recipient3".to_vec()).joined_key(), 3000)
-            ]
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
-    fn range_de_triple_key() {
-        let mut store = MockStorage::new();
-
-        // save and load on three keys, one under different owner
-        TRIPLE
-            .save(&mut store, (b"owner", 9u8, "recipient"), &1000)
-            .unwrap();
-        TRIPLE
-            .save(&mut store, (b"owner", 9u8, "recipient2"), &3000)
-            .unwrap();
-        TRIPLE
-            .save(&mut store, (b"owner", 10u8, "recipient3"), &3000)
-            .unwrap();
-        TRIPLE
-            .save(&mut store, (b"owner2", 9u8, "recipient"), &5000)
-            .unwrap();
-
-        // let's try to iterate!
-        let all: StdResult<Vec<_>> = TRIPLE
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(4, all.len());
-        assert_eq!(
-            all,
-            vec![
-                ((b"owner".to_vec(), 9, "recipient".to_string()), 1000),
-                ((b"owner".to_vec(), 9, "recipient2".to_string()), 3000),
-                ((b"owner".to_vec(), 10, "recipient3".to_string()), 3000),
-                ((b"owner2".to_vec(), 9, "recipient".to_string()), 5000)
-            ]
-        );
-
-        // let's iterate over a sub_prefix_de
-        let all: StdResult<Vec<_>> = TRIPLE
-            .sub_prefix_de(b"owner")
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(3, all.len());
-        assert_eq!(
-            all,
-            vec![
-                ((9, "recipient".to_string()), 1000),
-                ((9, "recipient2".to_string()), 3000),
-                ((10, "recipient3".to_string()), 3000),
-            ]
-        );
-
-        // let's iterate over a prefix_de
-        let all: StdResult<Vec<_>> = TRIPLE
-            .prefix_de((b"owner", 9))
-            .range_de(&store, None, None, Order::Ascending)
-            .collect();
-        let all = all.unwrap();
-        assert_eq!(2, all.len());
-        assert_eq!(
-            all,
-            vec![
-                ("recipient".to_string(), 1000),
-                ("recipient2".to_string(), 3000),
+                (
+                    [to_length_prefixed(b"\x09"), b"recipient".to_vec()].concat(),
+                    1000
+                ),
+                (
+                    [to_length_prefixed(b"\x09"), b"recipient2".to_vec()].concat(),
+                    3000
+                ),
+                (
+                    [to_length_prefixed(b"\x0a"), b"recipient3".to_vec()].concat(),
+                    3000
+                )
             ]
         );
     }
@@ -1002,182 +633,5 @@ mod test {
         assert_eq!(all?, vec![(b"spender2".to_vec(), 3000)]);
 
         Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
-    fn prefixed_range_works() {
-        // this is designed to look as much like a secondary index as possible
-        // we want to query over a range of u32 for the first key and all subkeys
-        const AGES: Map<(u32, Vec<u8>), u64> = Map::new("ages");
-
-        let mut store = MockStorage::new();
-        AGES.save(&mut store, (2, vec![1, 2, 3]), &123).unwrap();
-        AGES.save(&mut store, (3, vec![4, 5, 6]), &456).unwrap();
-        AGES.save(&mut store, (5, vec![7, 8, 9]), &789).unwrap();
-        AGES.save(&mut store, (5, vec![9, 8, 7]), &987).unwrap();
-        AGES.save(&mut store, (7, vec![20, 21, 22]), &2002).unwrap();
-        AGES.save(&mut store, (8, vec![23, 24, 25]), &2332).unwrap();
-
-        // typical range under one prefix as a control
-        let fives = AGES
-            .prefix(5)
-            .range(&store, None, None, Order::Ascending)
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(fives.len(), 2);
-        assert_eq!(fives, vec![(vec![7, 8, 9], 789), (vec![9, 8, 7], 987)]);
-
-        let keys: Vec<_> = AGES
-            .no_prefix()
-            .keys(&store, None, None, Order::Ascending)
-            .collect();
-        println!("keys: {:?}", keys);
-
-        // using inclusive bounds both sides
-        let include = AGES
-            .prefix_range(
-                &store,
-                Some(PrefixBound::inclusive(3u32)),
-                Some(PrefixBound::inclusive(7u32)),
-                Order::Ascending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 4);
-        assert_eq!(include, vec![456, 789, 987, 2002]);
-
-        // using exclusive bounds both sides
-        let exclude = AGES
-            .prefix_range(
-                &store,
-                Some(PrefixBound::exclusive(3u32)),
-                Some(PrefixBound::exclusive(7u32)),
-                Order::Ascending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(exclude.len(), 2);
-        assert_eq!(exclude, vec![789, 987]);
-
-        // using inclusive in descending
-        let include = AGES
-            .prefix_range(
-                &store,
-                Some(PrefixBound::inclusive(3u32)),
-                Some(PrefixBound::inclusive(5u32)),
-                Order::Descending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 3);
-        assert_eq!(include, vec![987, 789, 456]);
-
-        // using exclusive in descending
-        let include = AGES
-            .prefix_range(
-                &store,
-                Some(PrefixBound::exclusive(2u32)),
-                Some(PrefixBound::exclusive(5u32)),
-                Order::Descending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 1);
-        assert_eq!(include, vec![456]);
-    }
-
-    #[test]
-    #[cfg(feature = "iterator")]
-    fn prefixed_range_de_works() {
-        // this is designed to look as much like a secondary index as possible
-        // we want to query over a range of u32 for the first key and all subkeys
-        const AGES: Map<(u32, &str), u64> = Map::new("ages");
-
-        let mut store = MockStorage::new();
-        AGES.save(&mut store, (2, "123"), &123).unwrap();
-        AGES.save(&mut store, (3, "456"), &456).unwrap();
-        AGES.save(&mut store, (5, "789"), &789).unwrap();
-        AGES.save(&mut store, (5, "987"), &987).unwrap();
-        AGES.save(&mut store, (7, "202122"), &2002).unwrap();
-        AGES.save(&mut store, (8, "232425"), &2332).unwrap();
-
-        // typical range under one prefix as a control
-        let fives = AGES
-            .prefix_de(5)
-            .range(&store, None, None, Order::Ascending)
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(fives.len(), 2);
-        assert_eq!(
-            fives,
-            vec![("789".to_string(), 789), ("987".to_string(), 987)]
-        );
-
-        let keys: Vec<_> = AGES
-            .no_prefix()
-            .keys_de(&store, None, None, Order::Ascending)
-            .collect();
-        println!("keys: {:?}", keys);
-
-        // using inclusive bounds both sides
-        let include = AGES
-            .prefix_range_de(
-                &store,
-                Some(PrefixBound::inclusive(3u32)),
-                Some(PrefixBound::inclusive(7u32)),
-                Order::Ascending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 4);
-        assert_eq!(include, vec![456, 789, 987, 2002]);
-
-        // using exclusive bounds both sides
-        let exclude = AGES
-            .prefix_range_de(
-                &store,
-                Some(PrefixBound::exclusive(3u32)),
-                Some(PrefixBound::exclusive(7u32)),
-                Order::Ascending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(exclude.len(), 2);
-        assert_eq!(exclude, vec![789, 987]);
-
-        // using inclusive in descending
-        let include = AGES
-            .prefix_range_de(
-                &store,
-                Some(PrefixBound::inclusive(3u32)),
-                Some(PrefixBound::inclusive(5u32)),
-                Order::Descending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 3);
-        assert_eq!(include, vec![987, 789, 456]);
-
-        // using exclusive in descending
-        let include = AGES
-            .prefix_range_de(
-                &store,
-                Some(PrefixBound::exclusive(2u32)),
-                Some(PrefixBound::exclusive(5u32)),
-                Order::Descending,
-            )
-            .map(|r| r.map(|(_, v)| v))
-            .collect::<StdResult<Vec<_>>>()
-            .unwrap();
-        assert_eq!(include.len(), 1);
-        assert_eq!(include, vec![456]);
     }
 }

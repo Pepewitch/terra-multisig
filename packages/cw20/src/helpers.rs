@@ -2,8 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use cosmwasm_std::{
-    to_binary, Addr, CosmosMsg, Empty, Querier, QuerierWrapper, StdResult, Uint128, WasmMsg,
-    WasmQuery,
+    to_binary, Addr, CosmosMsg, Querier, QuerierWrapper, StdResult, Uint128, WasmMsg, WasmQuery,
 };
 
 use crate::{
@@ -47,7 +46,7 @@ impl Cw20Contract {
             msg: to_binary(&msg)?,
         }
         .into();
-        let res: BalanceResponse = QuerierWrapper::<Empty>::new(querier).query(&query)?;
+        let res: BalanceResponse = QuerierWrapper::new(querier).query(&query)?;
         Ok(res.balance)
     }
 
@@ -60,7 +59,7 @@ impl Cw20Contract {
             msg: to_binary(&msg)?,
         }
         .into();
-        QuerierWrapper::<Empty>::new(querier).query(&query)
+        QuerierWrapper::new(querier).query(&query)
     }
 
     /// Get allowance of spender to use owner's account
@@ -79,7 +78,7 @@ impl Cw20Contract {
             msg: to_binary(&msg)?,
         }
         .into();
-        QuerierWrapper::<Empty>::new(querier).query(&query)
+        QuerierWrapper::new(querier).query(&query)
     }
 
     /// Find info on who can mint, and how much
@@ -90,7 +89,7 @@ impl Cw20Contract {
             msg: to_binary(&msg)?,
         }
         .into();
-        QuerierWrapper::<Empty>::new(querier).query(&query)
+        QuerierWrapper::new(querier).query(&query)
     }
 
     /// returns true if the contract supports the allowance extension

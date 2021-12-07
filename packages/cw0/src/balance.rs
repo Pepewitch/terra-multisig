@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::{fmt, ops};
+use std::ops;
 
 use cosmwasm_std::{Coin, OverflowError, OverflowOperation, StdError, StdResult, Uint128};
 
@@ -88,15 +88,6 @@ impl NativeBalance {
             }
         };
         Ok(self)
-    }
-}
-
-impl fmt::Display for NativeBalance {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for c in &self.0 {
-            write!(f, "{}{}", c.denom, c.amount)?
-        }
-        Ok(())
     }
 }
 

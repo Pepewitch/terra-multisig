@@ -1,7 +1,6 @@
 use cosmwasm_std::Coin;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 use cw0::NativeBalance;
 
@@ -17,16 +16,6 @@ pub enum Balance {
 impl Default for Balance {
     fn default() -> Balance {
         Balance::Native(NativeBalance(vec![]))
-    }
-}
-
-impl fmt::Display for Balance {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Balance::Native(native) => write!(f, "{}", native),
-            Balance::Cw20(cw20) => write!(f, "{}", cw20),
-        }?;
-        Ok(())
     }
 }
 

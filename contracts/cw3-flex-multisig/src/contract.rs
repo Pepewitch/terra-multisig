@@ -89,14 +89,9 @@ pub fn execute_propose(
     // only members of the multisig can create a proposal
     let cfg = CONFIG.load(deps.storage)?;
 
-    // Only members of the multisig can create a proposal
-    // Non-voting members are special - they are allowed to create a proposal and
-    // therefore "vote", but they aren't allowed to vote otherwise.
-    // Such vote is also special, because despite having 0 weight it still counts when
-    // counting threshold passing
     let vote_power = cfg
         .group_addr
-        .is_member(&deps.querier, &info.sender, None)?
+        .is_member(&deps.querier, &info.sender)?
         .ok_or(ContractError::Unauthorized {})?;
 
     // max expires also used as default
@@ -117,20 +112,20 @@ pub fn execute_propose(
         expires,
         msgs,
         status: Status::Open,
-        votes: Votes::yes(vote_power),
+        votes: Votes::new(vote_power),
         threshold: cfg.threshold,
         total_weight: cfg.group_addr.total_weight(&deps.querier)?,
     };
     prop.update_status(&env.block);
     let id = next_id(deps.storage)?;
-    PROPOSALS.save(deps.storage, id, &prop)?;
+    PROPOSALS.save(deps.storage, id.into(), &prop)?;
 
     // add the first yes vote from voter
     let ballot = Ballot {
         weight: vote_power,
         vote: Vote::Yes,
     };
-    BALLOTS.save(deps.storage, (id, &info.sender), &ballot)?;
+    BALLOTS.save(deps.storage, (id.into(), &info.sender), &ballot)?;
 
     Ok(Response::new()
         .add_attribute("action", "propose")
@@ -150,7 +145,7 @@ pub fn execute_vote(
     let cfg = CONFIG.load(deps.storage)?;
 
     // ensure proposal exists and can be voted on
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     if prop.status != Status::Open {
         return Err(ContractError::NotOpen {});
     }
@@ -158,27 +153,29 @@ pub fn execute_vote(
         return Err(ContractError::Expired {});
     }
 
-    // Only voting members of the multisig can vote
-    // Additional check if weight >= 1
     // use a snapshot of "start of proposal"
     let vote_power = cfg
         .group_addr
-        .is_voting_member(&deps.querier, &info.sender, prop.start_height)?
+        .member_at_height(&deps.querier, info.sender.clone(), prop.start_height)?
         .ok_or(ContractError::Unauthorized {})?;
 
     // cast vote if no vote previously cast
-    BALLOTS.update(deps.storage, (proposal_id, &info.sender), |bal| match bal {
-        Some(_) => Err(ContractError::AlreadyVoted {}),
-        None => Ok(Ballot {
-            weight: vote_power,
-            vote,
-        }),
-    })?;
+    BALLOTS.update(
+        deps.storage,
+        (proposal_id.into(), &info.sender),
+        |bal| match bal {
+            Some(_) => Err(ContractError::AlreadyVoted {}),
+            None => Ok(Ballot {
+                weight: vote_power,
+                vote,
+            }),
+        },
+    )?;
 
     // update vote tally
     prop.votes.add_vote(vote, vote_power);
     prop.update_status(&env.block);
-    PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+    PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
 
     Ok(Response::new()
         .add_attribute("action", "vote")
@@ -195,7 +192,7 @@ pub fn execute_execute(
 ) -> Result<Response, ContractError> {
     // anyone can trigger this if the vote passed
 
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     // we allow execution even after the proposal "expiration" as long as all vote come in before
     // that point. If it was approved on time, it can be executed any time.
     if prop.status != Status::Passed {
@@ -204,7 +201,7 @@ pub fn execute_execute(
 
     // set it to executed
     prop.status = Status::Executed;
-    PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+    PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
 
     // dispatch all proposed messages
     Ok(Response::new()
@@ -222,7 +219,7 @@ pub fn execute_close(
 ) -> Result<Response<Empty>, ContractError> {
     // anyone can trigger this if the vote passed
 
-    let mut prop = PROPOSALS.load(deps.storage, proposal_id)?;
+    let mut prop = PROPOSALS.load(deps.storage, proposal_id.into())?;
     if [Status::Executed, Status::Rejected, Status::Passed]
         .iter()
         .any(|x| *x == prop.status)
@@ -235,7 +232,7 @@ pub fn execute_close(
 
     // set it to failed
     prop.status = Status::Rejected;
-    PROPOSALS.save(deps.storage, proposal_id, &prop)?;
+    PROPOSALS.save(deps.storage, proposal_id.into(), &prop)?;
 
     Ok(Response::new()
         .add_attribute("action", "close")
@@ -291,7 +288,7 @@ fn query_threshold(deps: Deps) -> StdResult<ThresholdResponse> {
 }
 
 fn query_proposal(deps: Deps, env: Env, id: u64) -> StdResult<ProposalResponse> {
-    let prop = PROPOSALS.load(deps.storage, id)?;
+    let prop = PROPOSALS.load(deps.storage, id.into())?;
     let status = prop.current_status(&env.block);
     let threshold = prop.threshold.to_response(prop.total_weight);
     Ok(ProposalResponse {
@@ -363,7 +360,7 @@ fn map_proposal(
 
 fn query_vote(deps: Deps, proposal_id: u64, voter: String) -> StdResult<VoteResponse> {
     let voter_addr = deps.api.addr_validate(&voter)?;
-    let prop = BALLOTS.may_load(deps.storage, (proposal_id, &voter_addr))?;
+    let prop = BALLOTS.may_load(deps.storage, (proposal_id.into(), &voter_addr))?;
     let vote = prop.map(|b| VoteInfo {
         voter,
         vote: b.vote,
@@ -383,7 +380,7 @@ fn list_votes(
     let start = addr.map(|addr| Bound::exclusive(addr.as_ref()));
 
     let votes: StdResult<Vec<_>> = BALLOTS
-        .prefix(proposal_id)
+        .prefix(proposal_id.into())
         .range(deps.storage, start, None, Order::Ascending)
         .take(limit)
         .map(|item| {
@@ -402,7 +399,7 @@ fn list_votes(
 fn query_voter(deps: Deps, voter: String) -> StdResult<VoterResponse> {
     let cfg = CONFIG.load(deps.storage)?;
     let voter_addr = deps.api.addr_validate(&voter)?;
-    let weight = cfg.group_addr.is_member(&deps.querier, &voter_addr, None)?;
+    let weight = cfg.group_addr.is_member(&deps.querier, &voter_addr)?;
 
     Ok(VoterResponse { weight })
 }
@@ -471,13 +468,8 @@ mod tests {
         Box::new(contract)
     }
 
-    fn mock_app(init_funds: &[Coin]) -> App {
-        AppBuilder::new().build(|router, _, storage| {
-            router
-                .bank
-                .init_balance(storage, &Addr::unchecked(OWNER), init_funds.to_vec())
-                .unwrap();
-        })
+    fn mock_app() -> App {
+        AppBuilder::new().build()
     }
 
     // uploads code and returns address of group contract
@@ -491,7 +483,6 @@ mod tests {
             .unwrap()
     }
 
-    #[track_caller]
     fn instantiate_flex(
         app: &mut App,
         group: Addr,
@@ -511,7 +502,6 @@ mod tests {
     // this will set up both contracts, instantiating the group with
     // all voters defined above, and the multisig pointing to it and given threshold criteria.
     // Returns (multisig address, group address).
-    #[track_caller]
     fn setup_test_case_fixed(
         app: &mut App,
         weight_needed: u64,
@@ -530,7 +520,6 @@ mod tests {
         )
     }
 
-    #[track_caller]
     fn setup_test_case(
         app: &mut App,
         threshold: Threshold,
@@ -544,7 +533,7 @@ mod tests {
             member(VOTER1, 1),
             member(VOTER2, 2),
             member(VOTER3, 3),
-            member(VOTER4, 12), // so that he alone can pass a 50 / 52% threshold proposal
+            member(VOTER4, 4),
             member(VOTER5, 5),
         ];
         let group_addr = instantiate_group(app, members);
@@ -571,8 +560,7 @@ mod tests {
 
         // Bonus: set some funds on the multisig contract for future proposals
         if !init_funds.is_empty() {
-            app.send_tokens(Addr::unchecked(OWNER), flex_addr.clone(), &init_funds)
-                .unwrap();
+            app.init_bank_balance(&flex_addr, init_funds).unwrap();
         }
         (flex_addr, group_addr)
     }
@@ -600,7 +588,7 @@ mod tests {
 
     #[test]
     fn test_instantiate_works() {
-        let mut app = mock_app(&[]);
+        let mut app = mock_app();
 
         // make a simple group
         let group_addr = instantiate_group(&mut app, vec![member(OWNER, 1)]);
@@ -611,10 +599,7 @@ mod tests {
         // Zero required weight fails
         let instantiate_msg = InstantiateMsg {
             group_addr: group_addr.to_string(),
-            threshold: Threshold::ThresholdQuorum {
-                threshold: Decimal::zero(),
-                quorum: Decimal::percent(1),
-            },
+            threshold: Threshold::AbsoluteCount { weight: 0 },
             max_voting_period,
         };
         let err = app
@@ -627,7 +612,7 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(ContractError::InvalidThreshold {}, err.downcast().unwrap());
+        assert_eq!(ContractError::ZeroThreshold {}, err.downcast().unwrap());
 
         // Total weight less than required weight not allowed
         let instantiate_msg = InstantiateMsg {
@@ -645,7 +630,10 @@ mod tests {
                 None,
             )
             .unwrap_err();
-        assert_eq!(ContractError::UnreachableWeight {}, err.downcast().unwrap());
+        assert_eq!(
+            ContractError::UnreachableThreshold {},
+            err.downcast().unwrap()
+        );
 
         // All valid
         let instantiate_msg = InstantiateMsg {
@@ -696,13 +684,17 @@ mod tests {
 
     #[test]
     fn test_propose_works() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
         let required_weight = 4;
         let voting_period = Duration::Time(2000000);
-        let (flex_addr, _) =
-            setup_test_case_fixed(&mut app, required_weight, voting_period, init_funds, false);
+        let (flex_addr, _) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            false,
+        );
 
         let proposal = pay_somebody_proposal();
         // Only voters can propose
@@ -801,15 +793,17 @@ mod tests {
 
     #[test]
     fn test_proposal_queries() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
+        let required_weight = 3;
         let voting_period = Duration::Time(2000000);
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(80),
-            quorum: Decimal::percent(20),
-        };
-        let (flex_addr, _) = setup_test_case(&mut app, threshold, voting_period, init_funds, false);
+        let (flex_addr, _) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            false,
+        );
 
         // create proposal with 1 vote power
         let proposal = pay_somebody_proposal();
@@ -822,7 +816,7 @@ mod tests {
         app.update_block(next_block);
         let proposal = pay_somebody_proposal();
         let res = app
-            .execute_contract(Addr::unchecked(VOTER4), flex_addr.clone(), &proposal, &[])
+            .execute_contract(Addr::unchecked(VOTER3), flex_addr.clone(), &proposal, &[])
             .unwrap();
         let proposal_id2: u64 = res.custom_attrs(1)[2].value.parse().unwrap();
 
@@ -885,10 +879,9 @@ mod tests {
             msgs,
             expires: voting_period.after(&proposed_at),
             status: Status::Open,
-            threshold: ThresholdResponse::ThresholdQuorum {
-                total_weight: 23,
-                threshold: Decimal::percent(80),
-                quorum: Decimal::percent(20),
+            threshold: ThresholdResponse::AbsoluteCount {
+                weight: 3,
+                total_weight: 15,
             },
         };
         assert_eq!(&expected, &res.proposals[0]);
@@ -896,15 +889,17 @@ mod tests {
 
     #[test]
     fn test_vote_works() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
-        };
+        let required_weight = 3;
         let voting_period = Duration::Time(2000000);
-        let (flex_addr, _) = setup_test_case(&mut app, threshold, voting_period, init_funds, false);
+        let (flex_addr, _) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            false,
+        );
 
         // create proposal with 0 vote power
         let proposal = pay_somebody_proposal();
@@ -915,7 +910,7 @@ mod tests {
         // Get the proposal id from the logs
         let proposal_id: u64 = res.custom_attrs(1)[2].value.parse().unwrap();
 
-        // Owner with 0 voting power cannot vote
+        // Owner cannot vote (again)
         let yes_vote = ExecuteMsg::Vote {
             proposal_id,
             vote: Vote::Yes,
@@ -923,7 +918,7 @@ mod tests {
         let err = app
             .execute_contract(Addr::unchecked(OWNER), flex_addr.clone(), &yes_vote, &[])
             .unwrap_err();
-        assert_eq!(ContractError::Unauthorized {}, err.downcast().unwrap());
+        assert_eq!(ContractError::AlreadyVoted {}, err.downcast().unwrap());
 
         // Only voters can vote
         let err = app
@@ -944,12 +939,6 @@ mod tests {
                 ("status", "Open"),
             ],
         );
-
-        // VOTER1 cannot vote again
-        let err = app
-            .execute_contract(Addr::unchecked(VOTER1), flex_addr.clone(), &yes_vote, &[])
-            .unwrap_err();
-        assert_eq!(ContractError::AlreadyVoted {}, err.downcast().unwrap());
 
         // No/Veto votes have no effect on the tally
         // Compute the current tally
@@ -1052,15 +1041,17 @@ mod tests {
 
     #[test]
     fn test_execute_works() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
-        };
+        let required_weight = 3;
         let voting_period = Duration::Time(2000000);
-        let (flex_addr, _) = setup_test_case(&mut app, threshold, voting_period, init_funds, true);
+        let (flex_addr, _) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            true,
+        );
 
         // ensure we have cash to cover the proposal
         let contract_bal = app.wrap().query_balance(&flex_addr, "BTC").unwrap();
@@ -1091,13 +1082,13 @@ mod tests {
             vote: Vote::Yes,
         };
         let res = app
-            .execute_contract(Addr::unchecked(VOTER4), flex_addr.clone(), &vote, &[])
+            .execute_contract(Addr::unchecked(VOTER3), flex_addr.clone(), &vote, &[])
             .unwrap();
         assert_eq!(
             res.custom_attrs(1),
             [
                 ("action", "vote"),
-                ("sender", VOTER4),
+                ("sender", VOTER3),
                 ("proposal_id", proposal_id.to_string().as_str()),
                 ("status", "Passed"),
             ],
@@ -1143,15 +1134,17 @@ mod tests {
 
     #[test]
     fn test_close_works() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
-        };
+        let required_weight = 3;
         let voting_period = Duration::Height(2000000);
-        let (flex_addr, _) = setup_test_case(&mut app, threshold, voting_period, init_funds, true);
+        let (flex_addr, _) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            true,
+        );
 
         // create proposal with 0 vote power
         let proposal = pay_somebody_proposal();
@@ -1194,16 +1187,17 @@ mod tests {
     // uses the power from the beginning of the voting period
     #[test]
     fn execute_group_changes_from_external() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
-        };
+        let required_weight = 4;
         let voting_period = Duration::Time(20000);
-        let (flex_addr, group_addr) =
-            setup_test_case(&mut app, threshold, voting_period, init_funds, false);
+        let (flex_addr, group_addr) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            false,
+        );
 
         // VOTER1 starts a proposal to send some tokens (1/4 votes)
         let proposal = pay_somebody_proposal();
@@ -1229,10 +1223,9 @@ mod tests {
             .wrap()
             .query_wasm_smart(&flex_addr, &QueryMsg::Threshold {})
             .unwrap();
-        let expected_thresh = ThresholdResponse::ThresholdQuorum {
-            total_weight: 23,
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
+        let expected_thresh = ThresholdResponse::AbsoluteCount {
+            weight: 4,
+            total_weight: 15,
         };
         assert_eq!(expected_thresh, threshold);
 
@@ -1240,13 +1233,13 @@ mod tests {
         app.update_block(|block| block.height += 2);
 
         // admin changes the group
-        // updates VOTER2 power to 21 -> with snapshot, vote doesn't pass proposal
+        // updates VOTER2 power to 7 -> with snapshot, vote doesn't pass proposal
         // adds NEWBIE with 2 power -> with snapshot, invalid vote
-        // removes VOTER3 -> with snapshot, can vote on proposal
+        // removes VOTER3 -> with snapshot, can vote and pass proposal
         let newbie: &str = "newbie";
         let update_msg = cw4_group::msg::ExecuteMsg::UpdateMembers {
             remove: vec![VOTER3.into()],
-            add: vec![member(VOTER2, 21), member(newbie, 2)],
+            add: vec![member(VOTER2, 7), member(newbie, 2)],
         };
         app.execute_contract(Addr::unchecked(OWNER), group_addr, &update_msg, &[])
             .unwrap();
@@ -1302,16 +1295,16 @@ mod tests {
         // previously removed VOTER3 can still vote, passing the proposal
         app.execute_contract(Addr::unchecked(VOTER3), flex_addr.clone(), &yes_vote, &[])
             .unwrap();
+        assert_eq!(prop_status(&app, proposal_id), Status::Passed);
 
         // check current threshold (global) is updated
         let threshold: ThresholdResponse = app
             .wrap()
             .query_wasm_smart(&flex_addr, &QueryMsg::Threshold {})
             .unwrap();
-        let expected_thresh = ThresholdResponse::ThresholdQuorum {
-            total_weight: 41,
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
+        let expected_thresh = ThresholdResponse::AbsoluteCount {
+            weight: 4,
+            total_weight: 19,
         };
         assert_eq!(expected_thresh, threshold);
 
@@ -1323,13 +1316,17 @@ mod tests {
     // trigger the action
     #[test]
     fn execute_group_changes_from_proposal() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
         let required_weight = 4;
         let voting_period = Duration::Time(20000);
-        let (flex_addr, group_addr) =
-            setup_test_case_fixed(&mut app, required_weight, voting_period, init_funds, true);
+        let (flex_addr, group_addr) = setup_test_case_fixed(
+            &mut app,
+            required_weight,
+            voting_period,
+            coins(10, "BTC"),
+            true,
+        );
 
         // Start a proposal to remove VOTER3 from the set
         let update_msg = Cw4GroupContract::new(group_addr)
@@ -1439,19 +1436,21 @@ mod tests {
     // uses the power from the beginning of the voting period
     #[test]
     fn percentage_handles_group_changes() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        // 51% required, which is 12 of the initial 24
-        let threshold = Threshold::ThresholdQuorum {
-            threshold: Decimal::percent(51),
-            quorum: Decimal::percent(1),
-        };
+        // 33% required, which is 5 of the initial 15
         let voting_period = Duration::Time(20000);
-        let (flex_addr, group_addr) =
-            setup_test_case(&mut app, threshold, voting_period, init_funds, false);
+        let (flex_addr, group_addr) = setup_test_case(
+            &mut app,
+            Threshold::AbsolutePercentage {
+                percentage: Decimal::percent(33),
+            },
+            voting_period,
+            coins(10, "BTC"),
+            false,
+        );
 
-        // VOTER3 starts a proposal to send some tokens (3/12 votes)
+        // VOTER3 starts a proposal to send some tokens (3/5 votes)
         let proposal = pay_somebody_proposal();
         let res = app
             .execute_contract(Addr::unchecked(VOTER3), flex_addr.clone(), &proposal, &[])
@@ -1467,17 +1466,17 @@ mod tests {
             prop.status
         };
 
-        // 3/12 votes
+        // 3/5 votes
         assert_eq!(prop_status(&app), Status::Open);
 
         // a few blocks later...
         app.update_block(|block| block.height += 2);
 
-        // admin changes the group (3 -> 0, 2 -> 9, 0 -> 29) - total = 56, require 29 to pass
+        // admin changes the group (3 -> 0, 2 -> 7, 0 -> 15) - total = 32, require 11 to pass
         let newbie: &str = "newbie";
         let update_msg = cw4_group::msg::ExecuteMsg::UpdateMembers {
             remove: vec![VOTER3.into()],
-            add: vec![member(VOTER2, 9), member(newbie, 29)],
+            add: vec![member(VOTER2, 7), member(newbie, 15)],
         };
         app.execute_contract(Addr::unchecked(OWNER), group_addr, &update_msg, &[])
             .unwrap();
@@ -1485,15 +1484,15 @@ mod tests {
         // a few blocks later...
         app.update_block(|block| block.height += 3);
 
-        // VOTER2 votes according to original weights: 3 + 2 = 5 / 12 => Open
-        // with updated weights, it would be 3 + 9 = 12 / 12 => Passed
+        // VOTER2 votes according to original weights: 3 + 2 = 5 / 5 => Passed
+        // with updated weights, it would be 3 + 7 = 10 / 11 => Open
         let yes_vote = ExecuteMsg::Vote {
             proposal_id,
             vote: Vote::Yes,
         };
         app.execute_contract(Addr::unchecked(VOTER2), flex_addr.clone(), &yes_vote, &[])
             .unwrap();
-        assert_eq!(prop_status(&app), Status::Open);
+        assert_eq!(prop_status(&app), Status::Passed);
 
         // new proposal can be passed single-handedly by newbie
         let proposal = pay_somebody_proposal();
@@ -1517,20 +1516,19 @@ mod tests {
     // uses the power from the beginning of the voting period
     #[test]
     fn quorum_handles_group_changes() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
-        // 33% required for quora, which is 8 of the initial 24
-        // 50% yes required to pass early (12 of the initial 24)
+        // 33% required for quora, which is 5 of the initial 15
+        // 50% yes required to pass early (8 of the initial 15)
         let voting_period = Duration::Time(20000);
         let (flex_addr, group_addr) = setup_test_case(
             &mut app,
             Threshold::ThresholdQuorum {
-                threshold: Decimal::percent(51),
+                threshold: Decimal::percent(50),
                 quorum: Decimal::percent(33),
             },
             voting_period,
-            init_funds,
+            coins(10, "BTC"),
             false,
         );
 
@@ -1550,17 +1548,17 @@ mod tests {
             prop.status
         };
 
-        // 3/12 votes - not expired
+        // 3/5 votes - not expired
         assert_eq!(prop_status(&app), Status::Open);
 
         // a few blocks later...
         app.update_block(|block| block.height += 2);
 
-        // admin changes the group (3 -> 0, 2 -> 9, 0 -> 28) - total = 55, require 28 to pass
+        // admin changes the group (3 -> 0, 2 -> 7, 0 -> 15) - total = 32, require 11 to pass
         let newbie: &str = "newbie";
         let update_msg = cw4_group::msg::ExecuteMsg::UpdateMembers {
             remove: vec![VOTER3.into()],
-            add: vec![member(VOTER2, 9), member(newbie, 29)],
+            add: vec![member(VOTER2, 7), member(newbie, 15)],
         };
         app.execute_contract(Addr::unchecked(OWNER), group_addr, &update_msg, &[])
             .unwrap();
@@ -1568,26 +1566,25 @@ mod tests {
         // a few blocks later...
         app.update_block(|block| block.height += 3);
 
-        // VOTER2 votes yes, according to original weights: 3 yes, 2 no, 5 total (will fail when expired)
-        // with updated weights, it would be 3 yes, 9 yes, 11 total (will pass when expired)
+        // VOTER2 votes no, according to original weights: 3 yes, 2 no, 5 total (will pass when expired)
+        // with updated weights, it would be 3 yes, 7 no, 10 total (will fail when expired)
         let yes_vote = ExecuteMsg::Vote {
             proposal_id,
-            vote: Vote::Yes,
+            vote: Vote::No,
         };
         app.execute_contract(Addr::unchecked(VOTER2), flex_addr.clone(), &yes_vote, &[])
             .unwrap();
         // not expired yet
         assert_eq!(prop_status(&app), Status::Open);
 
-        // wait until the vote is over, and see it was rejected
+        // wait until the vote is over, and see it was passed (met quorum, and threshold of voters)
         app.update_block(expire(voting_period));
-        assert_eq!(prop_status(&app), Status::Rejected);
+        assert_eq!(prop_status(&app), Status::Passed);
     }
 
     #[test]
     fn quorum_enforced_even_if_absolute_threshold_met() {
-        let init_funds = coins(10, "BTC");
-        let mut app = mock_app(&init_funds);
+        let mut app = mock_app();
 
         // 33% required for quora, which is 5 of the initial 15
         // 50% yes required to pass early (8 of the initial 15)
@@ -1600,7 +1597,7 @@ mod tests {
                 quorum: Decimal::percent(80),
             },
             voting_period,
-            init_funds,
+            coins(10, "BTC"),
             false,
         );
 
