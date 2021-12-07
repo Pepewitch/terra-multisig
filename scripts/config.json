@@ -1,0 +1,20 @@
+{
+  "network": {
+    "mainnet": {
+      "chainID": "columbus-5",
+      "fcd": "https://fcd.terra.dev",
+      "lcd": "https://lcd.terra.dev",
+      "name": "mainnet",
+      "ws": ""
+    },
+    "testnet": {
+      "chainID": "bombay-12",
+      "fcd": "https://bombay-fcd.terra.dev",
+      "lcd": "https://bombay-lcd.terra.dev",
+      "name": "testnet",
+      "ws": "wss://bombay-ws.terra.dev"
+    }
+  },
+  "gas_adjustment": 1.5,
+  "fee_denom": "uusd"
+}
