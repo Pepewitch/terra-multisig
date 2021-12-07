@@ -15,10 +15,14 @@ const run = async () => {
       voters: [
         {
           addr: wallet.key.accAddress,
-          weight: 5,
+          weight: 1,
+        },
+        {
+          addr: 'terra1x6y6h2xyw5hhl5rnulef0nr722ysgxraweqyvq',
+          weight: 1,
         },
       ],
-      required_weight: 5,
+      required_weight: 2,
       max_voting_period: {
         time: 24 * 60 * 60,
       },
