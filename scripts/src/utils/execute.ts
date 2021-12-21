@@ -13,11 +13,12 @@ export const execute = async (
   msgObj: any,
   coins?: Coins.Input
 ) => {
+  console.log(wallet.key.accAddress, address, msgObj, coins);
   const tx = await wallet.createAndSignTx({
     msgs: [
       new MsgExecuteContract(wallet.key.accAddress, address, msgObj, coins),
     ],
-    fee: new StdFee(2000000, "500000uusd"),
+    fee: new StdFee(1000000, "250000uusd"),
   });
 
   const result = await terra.tx.broadcast(tx);
@@ -30,7 +31,7 @@ export const execute = async (
 export const send = async (address: string, coins?: Coins.Input) => {
   const tx = await wallet.createAndSignTx({
     msgs: [new MsgSend(wallet.key.accAddress, address, coins)],
-    fee: new StdFee(1000000, "500000uusd"),
+    fee: new StdFee(1000000, "250000uusd"),
   });
 
   const result = await terra.tx.broadcast(tx);

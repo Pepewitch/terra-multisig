@@ -1,21 +1,30 @@
-import { MsgExecuteContract, MsgSend } from "@terra-money/terra.js";
+import { Coin, MsgExecuteContract, MsgSend } from "@terra-money/terra.js";
 import { multisigAddress } from "./constant";
 import { execute } from "./utils/execute";
 
 export const run = async () => {
   const res = await execute(multisigAddress, {
     propose: {
-      title: "Hello",
-      description: "desc",
+      title: "Send 1 UST",
+      description: "testing",
       msgs: [
-        new MsgSend(
-          multisigAddress,
-          "terra1x6y6h2xyw5hhl5rnulef0nr722ysgxraweqyvq",
-          "1000000uusd"
-        ).toData(),
+        {
+          bank: {
+            send: {
+              to_address: "terra1x6y6h2xyw5hhl5rnulef0nr722ysgxraweqyvq",
+              amount: [
+                {
+                  denom: "uusd",
+                  amount: "1000000",
+                },
+              ],
+            },
+          },
+        },
       ],
     },
   });
+  console.log(res);
 };
 
-run();
+run().catch((err) => console.log(err));

@@ -9,7 +9,7 @@ const run = async () => {
   const codeId = await upload(
     join(__dirname, "../../artifacts/cw3_fixed_multisig.wasm")
   );
-  const govAddress = await init(
+  const multisigAddress = await init(
     codeId,
     {
       voters: [
@@ -18,7 +18,7 @@ const run = async () => {
           weight: 1,
         },
         {
-          addr: 'terra1x6y6h2xyw5hhl5rnulef0nr722ysgxraweqyvq',
+          addr: "terra1x6y6h2xyw5hhl5rnulef0nr722ysgxraweqyvq",
           weight: 1,
         },
       ],
@@ -30,7 +30,7 @@ const run = async () => {
     [],
     false
   );
-  console.log("govAddress", govAddress);
+  console.log("multisigAddress", multisigAddress);
 };
 
 run().catch((err) => console.log(err));

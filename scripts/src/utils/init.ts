@@ -19,13 +19,7 @@ export const init = async (
       initCoins
     ),
   ];
-  const fee = isMainnet
-    ? new StdFee(1000000, "300000uusd")
-    : await retry(async () => {
-      return terra.tx.estimateFee(wallet.key.accAddress, msgs, {
-        feeDenoms: [feeDenom],
-      });
-    }).catch(() => new StdFee(1000000, "300000uusd"));
+  const fee = new StdFee(1000000, "300000uusd");
 
   const address = await retry(async () => {
     const tx = await wallet.createAndSignTx({
@@ -36,6 +30,7 @@ export const init = async (
     if (result.raw_log.includes("signature verification failed")) {
       throw result;
     }
+    console.log(result);
     const logs = JSON.parse(result.raw_log);
     let addr;
     for (const log of logs) {
